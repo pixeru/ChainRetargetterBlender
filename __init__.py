@@ -279,9 +279,7 @@ class ANIMATIONIMPORTER_PT_sidebar(Panel):
 
 		col = layout.column(align=True)
 		col.label(text="Source .fbx")
-		row = col.row(align=True)
-		row.prop(scene, "animation_importer_source", text="")
-		row.operator("animation_importer.pick_source_file", text="", icon='FILE_FOLDER')
+		col.prop(scene, "animation_importer_source", text="")
 
 		col.separator()
 		button_row = col.row()
