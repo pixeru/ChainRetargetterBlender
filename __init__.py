@@ -28,6 +28,17 @@ def _selected_rig(context):
 	return None
 
 
+def _comparison_rig(context, target_rig):
+	if target_rig is None:
+		return None
+
+	selected_armatures = [obj for obj in context.selected_objects if obj.type == 'ARMATURE' and obj != target_rig]
+	if len(selected_armatures) == 1:
+		return selected_armatures[0]
+
+	return None
+
+
 def _pick_action_slot(action, rig_object):
 	if not hasattr(action, "slots"):
 		return None
@@ -125,15 +136,42 @@ def _mode_to_object(context):
 		pass
 
 
-def _extract_imported_action(new_objects, new_actions):
+def _extract_imported_action_and_rig(new_objects, new_actions):
 	imported_armatures = [obj for obj in new_objects if obj.type == 'ARMATURE']
 
 	for armature_object in imported_armatures:
 		anim_data = armature_object.animation_data
 		if anim_data and anim_data.action:
-			return anim_data.action
+			return anim_data.action, armature_object
 
-	return new_actions[0] if new_actions else None
+	if new_actions:
+		fallback_rig = imported_armatures[0] if imported_armatures else None
+		return new_actions[0], fallback_rig
+
+	return None, None
+
+
+def _bone_compatibility_text_from_names(target_rig, imported_bone_names):
+	if target_rig is None or imported_bone_names is None:
+		return "Compatibility: unavailable"
+
+	target_bones = {bone.name for bone in target_rig.data.bones}
+	imported_total = len(imported_bone_names)
+
+	if imported_total == 0:
+		return "Compatibility: 0 of 0 bones, 0.0% compatible"
+
+	matched = sum(1 for bone_name in imported_bone_names if bone_name in target_bones)
+	percentage = (matched / imported_total) * 100.0
+	return f"Compatibility: {matched} of {imported_total} bones, {percentage:.1f}% compatible"
+
+
+def _bone_compatibility_text(target_rig, source_rig):
+	if source_rig is None:
+		return "Compatibility: unavailable"
+
+	source_bone_names = [bone.name for bone in source_rig.data.bones]
+	return _bone_compatibility_text_from_names(target_rig, source_bone_names)
 
 
 def _remove_objects(objects):
@@ -179,7 +217,7 @@ def _import_fbx_animation(filepath):
 	new_images = set(bpy.data.images.keys()) - before_images
 	new_collections = set(bpy.data.collections.keys()) - before_collections
 
-	imported_action = _extract_imported_action(new_objects, new_actions)
+	imported_action, imported_rig = _extract_imported_action_and_rig(new_objects, new_actions)
 	if imported_action is None:
 		_remove_objects(new_objects)
 		_remove_unused_ids(bpy.data.armatures, new_armatures)
@@ -187,7 +225,11 @@ def _import_fbx_animation(filepath):
 		_remove_unused_ids(bpy.data.materials, new_materials)
 		_remove_unused_ids(bpy.data.images, new_images)
 		_remove_unused_ids(bpy.data.collections, new_collections)
-		return None, 0
+		return None, None, 0
+
+	imported_bone_names = None
+	if imported_rig is not None:
+		imported_bone_names = [bone.name for bone in imported_rig.data.bones]
 
 	_remove_objects(new_objects)
 	_remove_unused_ids(bpy.data.armatures, new_armatures)
@@ -196,7 +238,7 @@ def _import_fbx_animation(filepath):
 	_remove_unused_ids(bpy.data.images, new_images)
 	_remove_unused_ids(bpy.data.collections, new_collections)
 
-	return imported_action, len(new_objects)
+	return imported_action, imported_bone_names, len(new_objects)
 
 
 class ANIMATIONIMPORTER_OT_pick_source_file(Operator, ImportHelper):
@@ -210,6 +252,7 @@ class ANIMATIONIMPORTER_OT_pick_source_file(Operator, ImportHelper):
 
 	def execute(self, context):
 		context.scene.animation_importer_source = self.filepath
+		context.scene.animation_importer_compatibility = "Compatibility: not checked yet"
 		self.report({'INFO'}, f"Selected {os.path.basename(self.filepath)}")
 
 		return {'FINISHED'}
@@ -239,14 +282,18 @@ class ANIMATIONIMPORTER_OT_load_action(Operator):
 		_mode_to_object(context)
 
 		try:
-			imported_action, imported_object_count = _import_fbx_animation(filepath)
+			imported_action, imported_bone_names, imported_object_count = _import_fbx_animation(filepath)
 		except RuntimeError as exc:
+			context.scene.animation_importer_compatibility = "Compatibility: import failed"
 			self.report({'ERROR'}, f"Failed to import FBX: {exc}")
 			return {'CANCELLED'}
 
 		if imported_action is None:
+			context.scene.animation_importer_compatibility = "Compatibility: no importable action found"
 			self.report({'ERROR'}, "The FBX did not create an importable action")
 			return {'CANCELLED'}
+
+		context.scene.animation_importer_compatibility = _bone_compatibility_text_from_names(rig_object, imported_bone_names)
 
 		filename_stem = os.path.splitext(os.path.basename(filepath))[0]
 		if imported_action.name in {'Armature', 'default', 'Take 001'}:
@@ -261,7 +308,31 @@ class ANIMATIONIMPORTER_OT_load_action(Operator):
 			context.scene.frame_start = int(frame_start)
 			context.scene.frame_end = int(frame_end)
 
-		self.report({'INFO'}, f"Loaded '{imported_action.name}' onto {rig_object.name} from FBX and removed {imported_object_count} temporary object(s)")
+		self.report({'INFO'}, f"Loaded '{imported_action.name}' onto {rig_object.name} from FBX and removed {imported_object_count} temporary object(s). {context.scene.animation_importer_compatibility}")
+		return {'FINISHED'}
+
+
+class ANIMATIONIMPORTER_OT_check_open_rig_compatibility(Operator):
+	bl_idname = "animation_importer.check_open_rig_compatibility"
+	bl_label = "Check Open Rig Compatibility"
+	bl_description = "Compare the active target rig against another selected armature already in the scene"
+
+	@classmethod
+	def poll(cls, context):
+		target_rig = _selected_rig(context)
+		comparison_rig = _comparison_rig(context, target_rig)
+		return target_rig is not None and comparison_rig is not None
+
+	def execute(self, context):
+		target_rig = _selected_rig(context)
+		comparison_rig = _comparison_rig(context, target_rig)
+
+		if target_rig is None or comparison_rig is None:
+			self.report({'ERROR'}, "Select the target rig as active and one other armature to compare")
+			return {'CANCELLED'}
+
+		context.scene.animation_importer_compatibility = _bone_compatibility_text(target_rig, comparison_rig)
+		self.report({'INFO'}, f"Compared {target_rig.name} against {comparison_rig.name}. {context.scene.animation_importer_compatibility}")
 		return {'FINISHED'}
 
 
@@ -276,6 +347,7 @@ class ANIMATIONIMPORTER_PT_sidebar(Panel):
 		layout = self.layout
 		scene = context.scene
 		rig_object = _selected_rig(context)
+		comparison_rig = _comparison_rig(context, rig_object)
 
 		col = layout.column(align=True)
 		col.label(text="Source .fbx")
@@ -286,19 +358,28 @@ class ANIMATIONIMPORTER_PT_sidebar(Panel):
 		button_row.enabled = rig_object is not None and bool(scene.animation_importer_source)
 		button_row.operator("animation_importer.load_action", icon='ACTION')
 
+		compare_row = col.row()
+		compare_row.enabled = comparison_rig is not None
+		compare_row.operator("animation_importer.check_open_rig_compatibility", icon='ARMATURE_DATA')
+
 		layout.separator()
 		if rig_object is None:
 			layout.label(text="Select one armature in the scene.", icon='ERROR')
 		else:
 			layout.label(text=f"Target rig: {rig_object.name}", icon='ARMATURE_DATA')
+		if comparison_rig is not None:
+			layout.label(text=f"Compare rig: {comparison_rig.name}", icon='BONE_DATA')
 
 		layout.label(text="The FBX is imported temporarily to extract its action.", icon='INFO')
+		layout.label(text="To compare an open rig, select the target rig and one other armature.", icon='INFO')
 		layout.label(text="Imported action will appear in the Action Editor.", icon='INFO')
+		layout.label(text=scene.animation_importer_compatibility, icon='BONE_DATA')
 
 
 classes = (
 	ANIMATIONIMPORTER_OT_pick_source_file,
 	ANIMATIONIMPORTER_OT_load_action,
+	ANIMATIONIMPORTER_OT_check_open_rig_compatibility,
 	ANIMATIONIMPORTER_PT_sidebar,
 )
 
@@ -312,9 +393,15 @@ def register():
 		description="FBX file that contains the source animation",
 		subtype='FILE_PATH',
 	)
+	bpy.types.Scene.animation_importer_compatibility = StringProperty(
+		name="Compatibility",
+		description="Latest imported rig compatibility result",
+		default="Compatibility: not checked yet",
+	)
 
 
 def unregister():
+	del bpy.types.Scene.animation_importer_compatibility
 	del bpy.types.Scene.animation_importer_source
 
 	for cls in reversed(classes):
