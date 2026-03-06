@@ -19,7 +19,13 @@ Usage:
 6. Click Load Animation.
 
 Video Docs:
-- Walkthrough recording: [docs/2026-03-06 14-51-18.mp4](docs/2026-03-06%2014-51-18.mp4)
+- Walkthrough recording:
+
+<video controls width="960" src="docs/2026-03-06%2014-51-18.mp4">
+	Your viewer does not support embedded video. Use the direct link below.
+</video>
+
+- Direct video link: [docs/2026-03-06 14-51-18.mp4](docs/2026-03-06%2014-51-18.mp4)
 
 Notes:
 - This is intended for the same rig structure. It does not retarget between different skeletons.
