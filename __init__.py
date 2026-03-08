@@ -1,6 +1,6 @@
 bl_info = {
 	"name": "Animation Importer",
-	"author": "GitHub Copilot",
+	"author": "pixeru",
 	"version": (1, 1, 0),
 	"blender": (4, 0, 0),
 	"location": "View3D > Sidebar > Animation Importer",
